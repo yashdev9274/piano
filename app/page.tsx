@@ -16,7 +16,8 @@ const COMPUTER_KEY_MAP = Object.fromEntries(
 
 export default function WebPiano() {
   const { resolvedTheme, setTheme } = useTheme()
-  const [ready, setReady] = useState(false)
+  const [audioReady, setAudioReady] = useState(false)
+  const [audioError, setAudioError] = useState<string | null>(null)
   const [selectedMidiDevice, setSelectedMidiDevice] = useState("")
   const [activeUiNotes, setActiveUiNotes] = useState<Set<number>>(new Set())
   const activeKeyNotesRef = useRef<Map<string, number>>(new Map())
@@ -85,10 +86,6 @@ export default function WebPiano() {
   })
 
   useEffect(() => {
-    initializeAudio().finally(() => setReady(true))
-  }, [initializeAudio])
-
-  useEffect(() => {
     setActiveUiNotes(new Set())
     activeKeyNotesRef.current.clear()
   }, [transpose, octaveShift])
@@ -106,7 +103,7 @@ export default function WebPiano() {
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
-      if (!ready || event.repeat) return
+      if (!audioReady || event.repeat) return
 
       if (event.altKey && !event.ctrlKey) {
         if (event.key === "ArrowUp" || event.key === "ArrowDown") {
@@ -155,12 +152,12 @@ export default function WebPiano() {
       activeKeyNotesRef.current.set(key, midiNote)
       playFromUi(midiNote, 100)
     },
-    [playFromUi, ready, setOctaveShift, setTranspose, setUseReverb, setVolume],
+    [audioReady, playFromUi, setOctaveShift, setTranspose, setUseReverb, setVolume],
   )
 
   const handleKeyUp = useCallback(
     (event: KeyboardEvent) => {
-      if (!ready) return
+      if (!audioReady) return
 
       const key = event.key.toLowerCase()
       const midiNote = activeKeyNotesRef.current.get(key)
@@ -169,8 +166,18 @@ export default function WebPiano() {
       activeKeyNotesRef.current.delete(key)
       releaseFromUi(midiNote)
     },
-    [ready, releaseFromUi],
+    [audioReady, releaseFromUi],
   )
+
+  const handleStartAudio = useCallback(async () => {
+    try {
+      await initializeAudio()
+      setAudioReady(true)
+      setAudioError(null)
+    } catch {
+      setAudioError("Audio could not be started in this browser session.")
+    }
+  }, [initializeAudio])
 
   useEffect(() => {
     window.addEventListener("keydown", handleKeyDown)
@@ -229,11 +236,11 @@ export default function WebPiano() {
 
         <section className="grid gap-6 xl:grid-cols-[1.35fr_0.95fr]">
           <div className="flex min-h-[420px] flex-col justify-between rounded-3xl border border-zinc-200/80 bg-white/85 p-5 shadow-[0_18px_60px_-30px_rgba(15,23,42,0.25)] backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/70">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold">Keyboard</h2>
-                <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                  Click, tap, type, or use a MIDI controller.
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Keyboard</h2>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                Click, tap, type, or use a MIDI controller.
                 </p>
               </div>
               <Badge variant={isInitialized ? "secondary" : "outline"}>
@@ -241,11 +248,29 @@ export default function WebPiano() {
               </Badge>
             </div>
 
-            <PianoKeyboard
-              noteOn={playFromUi}
-              noteOff={releaseFromUi}
-              activeNotes={activeUiNotes}
-            />
+            {audioReady ? (
+              <PianoKeyboard
+                noteOn={playFromUi}
+                noteOff={releaseFromUi}
+                activeNotes={activeUiNotes}
+              />
+            ) : (
+              <div className="flex min-h-[260px] items-center justify-center rounded-[2rem] border border-dashed border-zinc-300 bg-zinc-50/70 p-6 text-center dark:border-zinc-700 dark:bg-zinc-900/60">
+                <div className="max-w-md space-y-4">
+                  <div className="space-y-2">
+                    <h3 className="text-xl font-semibold">Start audio first</h3>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                      Browsers block Web Audio until a direct user gesture unlocks
+                      it. Click once, then the piano will respond normally.
+                    </p>
+                  </div>
+                  <Button onClick={handleStartAudio}>Start Audio</Button>
+                  {audioError ? (
+                    <p className="text-sm text-red-600 dark:text-red-400">{audioError}</p>
+                  ) : null}
+                </div>
+              </div>
+            )}
           </div>
 
           <ControlPanel
