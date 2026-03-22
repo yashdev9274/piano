@@ -16,6 +16,7 @@ const COMPUTER_KEY_MAP = Object.fromEntries(
 
 export default function WebPiano() {
   const { resolvedTheme, setTheme } = useTheme()
+  const [mounted, setMounted] = useState(false)
   const [audioReady, setAudioReady] = useState(false)
   const [audioError, setAudioError] = useState<string | null>(null)
   const [selectedMidiDevice, setSelectedMidiDevice] = useState("")
@@ -84,6 +85,10 @@ export default function WebPiano() {
     },
     selectedDeviceId: selectedMidiDevice,
   })
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   useEffect(() => {
     setActiveUiNotes(new Set())
@@ -216,8 +221,9 @@ export default function WebPiano() {
               <Button
                 variant="outline"
                 onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+                className={!mounted ? "opacity-0" : ""}
               >
-                {resolvedTheme === "dark" ? "Light" : "Dark"}
+                {mounted && (resolvedTheme === "dark" ? "Light" : "Dark")}
               </Button>
             </div>
           </div>

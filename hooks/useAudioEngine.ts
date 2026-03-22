@@ -11,6 +11,9 @@ interface Voice {
   note: number
   startTime: number
   isActive: boolean
+  tone: "rhodes" | "wurlitzer"
+  releasing: boolean
+  releasingAt: number
 }
 
 interface SynthesisParams {
@@ -27,10 +30,10 @@ interface SynthesisParams {
 
 const PRESETS: Record<"rhodes" | "wurlitzer", SynthesisParams> = {
   rhodes: {
-    attack: 0.005,
+    attack: 0.008,
     decay: 0.35,
-    sustain: 0.32,
-    release: 0.6,
+    sustain: 0.35,
+    release: 0.5,
     modIndex: 2.1,
     modRatio: 2,
     filterFreq: 4300,
@@ -38,15 +41,15 @@ const PRESETS: Record<"rhodes" | "wurlitzer", SynthesisParams> = {
     detune: 3,
   },
   wurlitzer: {
-    attack: 0.004,
-    decay: 0.2,
-    sustain: 0.24,
-    release: 0.4,
-    modIndex: 3.25,
-    modRatio: 3.5,
-    filterFreq: 3400,
-    filterQ: 1.1,
-    detune: 5,
+    attack: 0.006,
+    decay: 0.18,
+    sustain: 0.3,
+    release: 0.35,
+    modIndex: 1.8,
+    modRatio: 2.0,
+    filterFreq: 3200,
+    filterQ: 0.9,
+    detune: 4,
   },
 }
 
@@ -66,6 +69,9 @@ function createEmptyVoice(): Voice {
     note: -1,
     startTime: 0,
     isActive: false,
+    tone: "rhodes",
+    releasing: false,
+    releasingAt: 0,
   }
 }
 
@@ -135,44 +141,68 @@ export function useAudioEngine() {
       const context = audioContextRef.current
       if (!context || !voice.isActive || !voice.envelope || !voice.modulatorGain) return
 
-      const release = releaseOverride ?? PRESETS[activeTone].release
+      const release = releaseOverride ?? PRESETS[voice.tone].release
       const now = context.currentTime
+      const releaseTime = Math.max(release, 0.05)
 
       voice.envelope.gain.cancelScheduledValues(now)
-      voice.envelope.gain.setTargetAtTime(0.0001, now, Math.max(release / 5, 0.01))
+      voice.envelope.gain.setTargetAtTime(0.0001, now, releaseTime / 3)
 
       voice.modulatorGain.gain.cancelScheduledValues(now)
-      voice.modulatorGain.gain.setTargetAtTime(0.0001, now, Math.max(release / 6, 0.01))
+      voice.modulatorGain.gain.setTargetAtTime(0.0001, now, releaseTime / 3)
 
-      const stopAt = now + release + 0.08
-
+      const stopAt = now + releaseTime + 0.05
       voice.carrier?.stop(stopAt)
       voice.modulator?.stop(stopAt)
       voice.isActive = false
+      voice.releasing = true
+      voice.releasingAt = now
 
+      const cleanupDelay = (releaseTime + 0.15) * 1000
       window.setTimeout(() => {
         voice.carrier?.disconnect()
         voice.modulator?.disconnect()
         voice.modulatorGain?.disconnect()
         voice.envelope?.disconnect()
         voice.filter?.disconnect()
-        Object.assign(voice, createEmptyVoice())
-      }, (release + 0.12) * 1000)
+        voice.carrier = null
+        voice.modulator = null
+        voice.modulatorGain = null
+        voice.envelope = null
+        voice.filter = null
+        voice.releasing = false
+      }, cleanupDelay)
     },
-    [activeTone],
+    [],
   )
 
   const allocateVoice = useCallback(() => {
-    const freeVoice = voicesRef.current.find((voice) => !voice.isActive)
+    const freeVoice = voicesRef.current.find(
+      (voice) => !voice.isActive && !voice.releasing,
+    )
     if (freeVoice) return freeVoice
 
-    const oldestVoice = voicesRef.current.reduce((oldest, voice) =>
-      voice.startTime < oldest.startTime ? voice : oldest,
-    )
+    const oldestNonReleasingVoice = voicesRef.current
+      .filter((voice) => !voice.releasing)
+      .reduce(
+        (oldest, voice) =>
+          voice.startTime < oldest.startTime ? voice : oldest,
+      )
 
-    stopVoice(oldestVoice, 0.05)
-    Object.assign(oldestVoice, createEmptyVoice())
-    return oldestVoice
+    if (!oldestNonReleasingVoice) {
+      const oldestVoice = voicesRef.current.reduce(
+        (oldest, voice) =>
+          voice.startTime < oldest.startTime ? voice : oldest,
+      )
+      stopVoice(oldestVoice, 0.02)
+      return oldestVoice
+    }
+
+    if (oldestNonReleasingVoice.isActive) {
+      stopVoice(oldestNonReleasingVoice, 0.03)
+    }
+    Object.assign(oldestNonReleasingVoice, createEmptyVoice())
+    return oldestNonReleasingVoice
   }, [stopVoice])
 
   const startVoice = useCallback(
@@ -214,19 +244,26 @@ export function useAudioEngine() {
       filter.connect(masterGain)
 
       const peakModulation = frequency * preset.modRatio * preset.modIndex
+      const attackTime = Math.max(preset.attack, 0.008)
 
       modulatorGain.gain.setValueAtTime(0.0001, now)
-      modulatorGain.gain.linearRampToValueAtTime(peakModulation, now + preset.attack)
       modulatorGain.gain.exponentialRampToValueAtTime(
-        peakModulation * preset.sustain + 0.0001,
-        now + preset.attack + preset.decay,
+        Math.max(peakModulation, 0.0001),
+        now + attackTime,
+      )
+      modulatorGain.gain.exponentialRampToValueAtTime(
+        Math.max(peakModulation * preset.sustain, 0.0001),
+        now + attackTime + preset.decay,
       )
 
       envelope.gain.setValueAtTime(0.0001, now)
-      envelope.gain.linearRampToValueAtTime(velocityGain, now + preset.attack)
       envelope.gain.exponentialRampToValueAtTime(
-        velocityGain * preset.sustain + 0.0001,
-        now + preset.attack + preset.decay,
+        Math.max(velocityGain, 0.0001),
+        now + attackTime,
+      )
+      envelope.gain.exponentialRampToValueAtTime(
+        Math.max(velocityGain * preset.sustain, 0.0001),
+        now + attackTime + preset.decay,
       )
 
       modulator.start(now)
@@ -241,6 +278,7 @@ export function useAudioEngine() {
         note: midiNote,
         startTime: now,
         isActive: true,
+        tone: activeTone,
       })
     },
     [activeTone, allocateVoice],
